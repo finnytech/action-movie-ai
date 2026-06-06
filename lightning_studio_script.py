@@ -26,7 +26,7 @@ print("Libraries check complete!")
 import torch
 import torchvision
 import scipy.io.wavfile as wav
-from diffusers import HunyuanVideoPipeline, AudioLDM2Pipeline
+from diffusers import HunyuanVideoPipeline, HunyuanVideo15ImageToVideoPipeline, AudioLDM2Pipeline
 from diffusers.utils import export_to_video
 import gradio as gr
 from huggingface_hub import snapshot_download
@@ -39,6 +39,7 @@ def pre_download_models():
     print("This ensures all huge files are on the hard drive before the app starts.")
     models = [
         "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v_distilled",
+        "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_i2v_distilled",
         "cvssp/audioldm2-large"
     ]
     for model_id in models:
@@ -57,13 +58,30 @@ def clear_memory():
         torch.cuda.ipc_collect()
         print("[Memory Cleared] GPU VRAM and System RAM emptied.")
 
+def concat_videos(video_paths, output_path):
+    if len(video_paths) == 1:
+        import shutil
+        shutil.copy2(video_paths[0], output_path)
+        return
+    # create text file for ffmpeg concat
+    list_file = "concat_list.txt"
+    with open(list_file, "w") as f:
+        for p in video_paths:
+            f.write(f"file '{p}'\n")
+    cmd = [
+        "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+        "-i", list_file, "-c", "copy", output_path
+    ]
+    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+    os.remove(list_file)
+
 def generate_action_scene(
     video_prompt,
     video_negative_prompt,
     audio_prompt,
     model_name,
     resolution,
-    num_frames,
+    target_duration,
     fps,
     video_steps,
     cfg_scale,
@@ -82,113 +100,143 @@ def generate_action_scene(
         width, height = 720, 480  # fallback
 
     seed = int(seed)
-    num_frames = int(num_frames)
+    target_duration = int(target_duration)
     fps = int(fps)
     video_steps = int(video_steps)
     audio_steps = int(audio_steps)
 
-    temp_video_path = "temp_silent.mp4"
+    # 49 frames at 15 fps = ~3.26s per chunk
+    frames_per_chunk = 49  
+    chunk_duration = frames_per_chunk / fps
+    num_chunks = max(1, int(target_duration / chunk_duration) + (1 if target_duration % chunk_duration > 0 else 0))
+
     temp_audio_path = "temp_audio.wav"
-    output_filename = "action_movie_scene.mp4"
+    final_output_filename = "action_movie_scene.mp4"
+    current_merged_video = "current_merged.mp4"
 
     # Clean up previous runs
-    for path in [temp_video_path, temp_audio_path, output_filename]:
+    for path in [temp_audio_path, final_output_filename, current_merged_video]:
         if os.path.exists(path):
             os.remove(path)
 
+    generated_chunk_paths = []
+    last_frame_image = None
+
     # ==========================================
-    # PHASE 1: GENERATE VIDEO (HUNYUANVIDEO)
+    # PHASE 1: GENERATE VIDEO CHUNKS
     # ==========================================
-    print(f"\n--- Loading Video Model: {model_name} ---")
-    try:
-        # Load the pipeline in bfloat16 (native for HunyuanVideo)
-        pipe = HunyuanVideoPipeline.from_pretrained(
-            model_name,
-            torch_dtype=torch.bfloat16
-        )
+    for i in range(num_chunks):
+        chunk_path = f"chunk_{i}.mp4"
+        if os.path.exists(chunk_path):
+            os.remove(chunk_path)
+            
+        print(f"\n--- Generating Video Chunk {i+1}/{num_chunks} ---")
         
-        # Apply VRAM optimizations
-        pipe.vae.enable_tiling()
+        try:
+            if i == 0:
+                print(f"Loading Text-to-Video Model: {model_name}")
+                pipe = HunyuanVideoPipeline.from_pretrained(model_name, torch_dtype=torch.bfloat16)
+                pipe.vae.enable_tiling()
+                if enable_cpu_offload:
+                    pipe.enable_model_cpu_offload()
+                    print("CPU Offload enabled for T2V Model.")
+                else:
+                    pipe.to("cuda")
+                    print("Loaded T2V Model directly into GPU VRAM.")
+
+                generator = torch.Generator("cuda").manual_seed(seed) if seed != -1 else None
+                
+                print(f"Generating first chunk...")
+                video_frames = pipe(
+                    prompt=video_prompt,
+                    negative_prompt=video_negative_prompt,
+                    height=height,
+                    width=width,
+                    num_frames=frames_per_chunk,
+                    num_inference_steps=video_steps,
+                    guidance_scale=cfg_scale,
+                    generator=generator
+                ).frames[0]
+
+            else:
+                i2v_model = "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_i2v_distilled"
+                print(f"Loading Image-to-Video Model for Continuation: {i2v_model}")
+                pipe = HunyuanVideo15ImageToVideoPipeline.from_pretrained(i2v_model, torch_dtype=torch.bfloat16)
+                pipe.vae.enable_tiling()
+                if enable_cpu_offload:
+                    pipe.enable_model_cpu_offload()
+                    print("CPU Offload enabled for I2V Model.")
+                else:
+                    pipe.to("cuda")
+                    print("Loaded I2V Model directly into GPU VRAM.")
+
+                generator = torch.Generator("cuda").manual_seed(seed) if seed != -1 else None
+
+                print(f"Generating continuation chunk from previous frame...")
+                video_frames = pipe(
+                    image=last_frame_image,
+                    prompt=video_prompt,
+                    height=height,
+                    width=width,
+                    num_frames=frames_per_chunk,
+                    num_inference_steps=video_steps,
+                    generator=generator
+                ).frames[0]
+
+            print(f"Exporting chunk {i+1}...")
+            export_to_video(video_frames, chunk_path, fps=fps)
+            generated_chunk_paths.append(chunk_path)
+            last_frame_image = video_frames[-1]  # Save the last PIL Image for the next chunk
+
+        except Exception as e:
+            err_msg = f"Error during video generation at chunk {i+1}: {e}"
+            print(err_msg)
+            yield current_merged_video if os.path.exists(current_merged_video) else None, err_msg
+            return
         
-        if enable_cpu_offload:
-            pipe.enable_model_cpu_offload()
-            print("CPU Offload enabled for Video Model.")
-        else:
-            pipe.to("cuda")
-            print("Loaded Video Model directly into GPU VRAM.")
+        finally:
+            if 'pipe' in locals():
+                del pipe
+            clear_memory()
 
-        # Setup Seed
-        generator = torch.Generator("cuda").manual_seed(seed) if seed != -1 else None
-
-        print("Generating video frames (this may take 1-3 minutes)...")
-        video_frames = pipe(
-            prompt=video_prompt,
-            negative_prompt=video_negative_prompt,
-            height=height,
-            width=width,
-            num_frames=num_frames,
-            num_inference_steps=video_steps,
-            guidance_scale=cfg_scale,
-            generator=generator
-        ).frames[0]
-
-        print("Exporting silent video...")
-        export_to_video(video_frames, temp_video_path, fps=fps)
-        print("Video generation phase complete!")
-
-    except Exception as e:
-        print(f"Error during video generation: {e}")
-        return None, f"Video Error: {str(e)}"
-    
-    finally:
-        # Crucial clean-up to free RAM/VRAM before loading the Audio model
-        if 'pipe' in locals():
-            del pipe
-        clear_memory()
+        # Merge what we have so far
+        concat_videos(generated_chunk_paths, current_merged_video)
+        current_len = min(target_duration, round((i+1) * chunk_duration, 1))
+        yield current_merged_video, f"⏳ Generating video... ({current_len}s / {target_duration}s ready)"
 
     # ==========================================
-    # PHASE 2: GENERATE AUDIO (AUDIOLDM2)
+    # PHASE 2: GENERATE AUDIO FOR TOTAL DURATION
     # ==========================================
-    print("\n--- Loading Audio Model: cvssp/audioldm2-large ---")
+    total_video_duration = len(generated_chunk_paths) * chunk_duration
+    print(f"\n--- Loading Audio Model for {total_video_duration:.2f}s of audio ---")
     try:
         audio_pipe = AudioLDM2Pipeline.from_pretrained(
             "cvssp/audioldm2-large",
             torch_dtype=torch.float16
         )
-        
         if enable_cpu_offload:
             audio_pipe.enable_model_cpu_offload()
-            print("CPU Offload enabled for Audio Model.")
         else:
             audio_pipe.to("cuda")
-            print("Loaded Audio Model directly into GPU VRAM.")
-
-        # Calculate exact audio duration in seconds
-        audio_duration = num_frames / fps
-        print(f"Generating audio for {audio_duration:.2f} seconds based on audio prompt...")
 
         generator = torch.Generator("cuda").manual_seed(seed) if seed != -1 else None
         
+        print(f"Generating {total_video_duration:.2f} seconds of audio...")
         audio_output = audio_pipe(
             prompt=audio_prompt,
             negative_prompt="low quality, ambient noise, static, hiss, music, bad quality",
             num_inference_steps=audio_steps,
-            audio_length_in_s=audio_duration,
+            audio_length_in_s=total_video_duration,
             generator=generator
         ).audios[0]
 
         print("Saving audio track...")
-        # Write wav with 16000Hz sampling rate
         wav.write(temp_audio_path, rate=16000, data=audio_output)
-        print("Audio generation phase complete!")
-
+        
     except Exception as e:
         print(f"Error during audio generation: {e}")
-        # If audio fails, we can still return the silent video
-        if os.path.exists(temp_video_path):
-            os.rename(temp_video_path, output_filename)
-            return output_filename, f"Warning: Audio failed ({str(e)}). Showing silent video."
-        return None, f"Audio Error: {str(e)}"
+        yield current_merged_video, f"Warning: Audio failed ({str(e)}). Showing silent video."
+        return
         
     finally:
         if 'audio_pipe' in locals():
@@ -198,37 +246,30 @@ def generate_action_scene(
     # ==========================================
     # PHASE 3: MERGE VIDEO AND AUDIO VIA FFMPEG
     # ==========================================
-    print("\n--- Merging video and audio using FFmpeg ---")
-    if os.path.exists(temp_video_path) and os.path.exists(temp_audio_path):
-        try:
-            cmd = [
-                "ffmpeg", "-y",
-                "-i", temp_video_path,
-                "-i", temp_audio_path,
-                "-c:v", "copy",
-                "-c:a", "aac",
-                "-shortest",
-                output_filename
-            ]
-            # Execute command with standard output suppressed to avoid clutter
-            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
-            print("Merge successful!")
-        except Exception as e:
-            print(f"FFmpeg merging failed: {e}")
-            # Fallback to silent video if merging fails
-            os.rename(temp_video_path, output_filename)
-            return output_filename, f"Warning: FFmpeg merge failed. Showing silent video."
-        finally:
-            # Clean up temp files
-            if os.path.exists(temp_video_path):
-                os.remove(temp_video_path)
-            if os.path.exists(temp_audio_path):
-                os.remove(temp_audio_path)
-    else:
-        return None, "Error: Generation succeeded but temporary files were missing."
+    print("\n--- Final Merge: Video + Audio ---")
+    try:
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", current_merged_video,
+            "-i", temp_audio_path,
+            "-c:v", "copy",
+            "-c:a", "aac",
+            "-shortest",
+            final_output_filename
+        ]
+        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+    except Exception as e:
+        print(f"FFmpeg final merge failed: {e}")
+        yield current_merged_video, "Warning: Audio merge failed. Showing silent video."
+        return
+    finally:
+        for p in generated_chunk_paths:
+            if os.path.exists(p): os.remove(p)
+        if os.path.exists(temp_audio_path): os.remove(temp_audio_path)
+        if os.path.exists(current_merged_video): os.remove(current_merged_video)
 
-    print("Successfully generated final action video with high-fidelity audio!")
-    return output_filename, "Success! Your cinematic action video is ready."
+    yield final_output_filename, f"✅ Success! {total_video_duration:.1f}s cinematic action video is ready."
+
 
 # ==========================================
 # PHASE 4: GRADIO WEB UI INTERFACE
@@ -244,9 +285,9 @@ with gr.Blocks() as demo:
     with gr.Row(elem_id="title-header"):
         gr.Markdown(
             """
-            # 🎬 HUNYUANVIDEO & AUDIOLDM2 ACTION STUDIO
-            ### Cinematic Action Video (PG-16) & Sound Design Generator
-            *Optimized for NVIDIA L40S & A100 GPUs on Lightning AI. Runs sequentially to protect system RAM.*
+            # 🎬 HUNYUANVIDEO CONTINUOUS ACTION STUDIO
+            ### 30s Cinematic Action Video & Sound Design Generator
+            *Auto-Chaining Image-to-Video Engine. Watch the video grow live!*
             """
         )
     
@@ -255,91 +296,71 @@ with gr.Blocks() as demo:
             gr.Markdown("### 📝 Regie-Anweisungen")
             video_prompt = gr.Textbox(
                 label="Video Prompt (Englisch empfohlen)",
-                placeholder="A high-octane motorcycle chase through neon-lit streets of Tokyo. Sparks flying, realistic lighting, camera tracking behind.",
-                value="A cinematic action fight scene of two warriors in a rainy alleyway at night. Slow motion punches, splashing water, dramatic cinematic lighting, photorealistic.",
+                value="A cinematic action fight scene of two warriors in a rainy alleyway at night. Slow motion punches, splashing water, photorealistic.",
                 lines=3
             )
             video_neg_prompt = gr.Textbox(
-                label="Negative Prompt (Was du NICHT willst)",
+                label="Negative Prompt",
                 value="blurry, worst quality, low quality, static, deformed, cartoon, 3d, anime",
                 lines=2
             )
             audio_prompt = gr.Textbox(
-                label="Audio Design Prompt (Wie soll die Szene klingen?)",
-                placeholder="loud thunder, heavy rain, metal impacts, grunts, intense background cinematic drums",
+                label="Audio Design Prompt",
                 value="heavy rain, loud thunder rumbling, physical punches, grunts, cinematic action score",
                 lines=2
             )
             
             with gr.Accordion("⚙️ Kamera- & Modell-Optionen", open=True):
                 model_name = gr.Dropdown(
-                    label="HunyuanVideo Modell",
-                    choices=[
-                        "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v_distilled",
-                        "hunyuanvideo-community/HunyuanVideo"
-                    ],
+                    label="T2V Start-Modell",
+                    choices=["hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v_distilled"],
                     value="hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v_distilled"
                 )
                 resolution = gr.Dropdown(
                     label="Auflösung",
-                    choices=["720x480", "854x480", "960x544", "1280x720"],
+                    choices=["720x480", "854x480"],
                     value="720x480"
                 )
-                num_frames = gr.Slider(
-                    label="Anzahl Frames (Länge)",
-                    minimum=17,
-                    maximum=129,
-                    step=16,
-                    value=49,
-                    info="Formel: 4k + 1. 49 Frames = ~3 Sek bei 15fps, 81 Frames = ~5 Sek bei 15fps"
+                target_duration = gr.Slider(
+                    label="Ziel-Länge (Sekunden)",
+                    minimum=4,
+                    maximum=30,
+                    step=4,
+                    value=12,
+                    info="Das Skript generiert ~3-4s Chunks und verknüpft sie nahtlos."
                 )
                 fps = gr.Slider(
-                    label="FPS (Geschwindigkeit)",
+                    label="FPS",
                     minimum=8,
-                    maximum=30,
+                    maximum=24,
                     step=1,
                     value=15
                 )
                 video_steps = gr.Slider(
-                    label="Video Qualitäts-Steps",
+                    label="Video Steps pro Chunk",
                     minimum=10,
-                    maximum=50,
+                    maximum=30,
                     step=1,
-                    value=15,
-                    info="Distilled-Modell: 10-15 Steps. Base-Modell: 30-50 Steps."
+                    value=15
                 )
                 cfg_scale = gr.Slider(
-                    label="CFG Scale (Prompt-Treue)",
+                    label="CFG Scale",
                     minimum=1.0,
-                    maximum=15.0,
+                    maximum=10.0,
                     step=0.5,
                     value=6.0
                 )
-                seed = gr.Number(
-                    label="Seed (-1 für Zufall)",
-                    value=-1,
-                    precision=0
-                )
-                audio_steps = gr.Slider(
-                    label="Audio-Qualitäts-Steps",
-                    minimum=20,
-                    maximum=200,
-                    step=10,
-                    value=100
-                )
-                enable_cpu_offload = gr.Checkbox(
-                    label="Agressives CPU-Offloading aktivieren",
-                    value=False,
-                    info="Aktivieren, falls der VRAM überläuft (z.B. bei 1280x720 Auflösung)."
-                )
+                seed = gr.Number(label="Seed (-1 für Zufall)", value=-1, precision=0)
+                audio_steps = gr.Slider(label="Audio Steps", minimum=20, maximum=100, step=10, value=50)
+                enable_cpu_offload = gr.Checkbox(label="Agressives CPU-Offloading (Gegen VRAM Overflows)", value=False)
 
-            generate_btn = gr.Button("🔥 ACTION! (Generieren)", variant="primary", size="lg")
+            generate_btn = gr.Button("🔥 ACTION! (Starten)", variant="primary", size="lg")
             
         with gr.Column(scale=1):
-            gr.Markdown("### 📺 Preview-Monitor")
-            status_output = gr.Textbox(label="Status-Meldungen", interactive=False)
+            gr.Markdown("### 📺 Live Preview-Monitor")
+            status_output = gr.Textbox(label="Status", interactive=False)
             video_output = gr.Video(
-                label="Dein fertiger Action-Film",
+                label="Video Stream",
                 interactive=False,
                 autoplay=True,
                 loop=True
@@ -348,25 +369,13 @@ with gr.Blocks() as demo:
     generate_btn.click(
         fn=generate_action_scene,
         inputs=[
-            video_prompt,
-            video_neg_prompt,
-            audio_prompt,
-            model_name,
-            resolution,
-            num_frames,
-            fps,
-            video_steps,
-            cfg_scale,
-            seed,
-            audio_steps,
-            enable_cpu_offload
+            video_prompt, video_neg_prompt, audio_prompt, model_name, resolution,
+            target_duration, fps, video_steps, cfg_scale, seed, audio_steps, enable_cpu_offload
         ],
         outputs=[video_output, status_output]
     )
 
 if __name__ == "__main__":
-    # Standard launch configuration for Lightning AI Studio
-    # exposing web server on port 7860 and enabling a direct public link
     demo.launch(
         server_name="0.0.0.0", 
         server_port=7860, 
