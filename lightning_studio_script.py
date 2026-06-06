@@ -18,7 +18,7 @@ print("Checking and installing required libraries. Please wait...")
 subprocess.run([
     sys.executable, "-m", "pip", "install", "-q",
     "diffusers", "transformers", "accelerate", "scipy", 
-    "gradio", "sentencepiece", "protobuf", "imageio-ffmpeg"
+    "gradio", "sentencepiece", "protobuf", "imageio-ffmpeg", "huggingface_hub"
 ], check=True)
 
 print("Libraries check complete!")
@@ -29,6 +29,25 @@ import scipy.io.wavfile as wav
 from diffusers import HunyuanVideoPipeline, AudioLDM2Pipeline
 from diffusers.utils import export_to_video
 import gradio as gr
+from huggingface_hub import snapshot_download
+
+# ==========================================
+# PHASE 0: PRE-DOWNLOAD MODELS
+# ==========================================
+def pre_download_models():
+    print("\n--- Checking and Pre-Downloading Models ---")
+    print("This ensures all huge files are on the hard drive before the app starts.")
+    models = [
+        "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v_distilled",
+        "cvssp/audioldm2-large"
+    ]
+    for model_id in models:
+        print(f"Verifying {model_id}...")
+        snapshot_download(repo_id=model_id)
+        print(f"✅ {model_id} is fully downloaded and ready!")
+    print("All models are cached locally!\n")
+
+pre_download_models()
 
 def clear_memory():
     """Aggressively clears system RAM and GPU VRAM to prevent Out-Of-Memory crashes."""
