@@ -221,7 +221,7 @@ body { background-color: #0b0f19; color: #f3f4f6; font-family: 'Inter', sans-ser
 #title-header h1 { font-weight: 800; background: linear-gradient(90deg, #ff4e50, #f9d423); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
 """
 
-with gr.Blocks(theme=gr.themes.Default(primary_hue="red", secondary_hue="amber"), css=css) as demo:
+with gr.Blocks() as demo:
     with gr.Row(elem_id="title-header"):
         gr.Markdown(
             """
@@ -347,5 +347,11 @@ with gr.Blocks(theme=gr.themes.Default(primary_hue="red", secondary_hue="amber")
 
 if __name__ == "__main__":
     # Standard launch configuration for Lightning AI Studio
-    # exposing web server on port 7860 so Lightning AI port forwarder detects it automatically
-    demo.launch(server_name="0.0.0.0", server_port=7860)
+    # exposing web server on port 7860 and enabling a direct public link
+    demo.launch(
+        server_name="0.0.0.0", 
+        server_port=7860, 
+        share=True,
+        theme=gr.themes.Default(primary_hue="red", secondary_hue="amber"),
+        css=css
+    )
