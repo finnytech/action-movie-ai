@@ -8,32 +8,23 @@
 # Run it in your Lightning AI terminal:
 # python D:/workspace/action_movie_ai/lightning_studio_script.py
 
-import subprocess
+import os
+import gc
 import sys
+import subprocess
 
 print("Checking and installing required libraries. Please wait...")
-# We do not upgrade 'torch' by default because upgrading it in Lightning AI conda environment breaks torchvision compatibility.
-# Instead, we install other packages and ensure torchvision/torch are compatible.
+# We install required packages without upgrading dependencies to avoid breaking Lightning AI's pre-installed torch/torchvision
 subprocess.run([
-    sys.executable, "-m", "pip", "install", "-q", "-U",
+    sys.executable, "-m", "pip", "install", "-q",
     "diffusers", "transformers", "accelerate", "scipy", 
     "gradio", "sentencepiece", "protobuf", "imageio-ffmpeg"
 ], check=True)
 
-# Repair torchvision mismatch if present
-try:
-    import torchvision
-except Exception as e:
-    err_msg = str(e)
-    if "torchvision::nms" in err_msg or "torchvision" in err_msg or "operator" in err_msg:
-        print("Detected torchvision/torch mismatch. Repairing and restoring torch==2.8.0...")
-        subprocess.run([sys.executable, "-m", "pip", "install", "-q", "torch==2.8.0"], check=True)
-
 print("Libraries check complete!")
 
-import os
-import gc
 import torch
+import torchvision
 import scipy.io.wavfile as wav
 from diffusers import HunyuanVideoPipeline, AudioLDM2Pipeline
 from diffusers.utils import export_to_video
