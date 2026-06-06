@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+temp_silent.mp4
+temp_audio.wav
+action_movie_scene.mp4
+*.mp4
+*.wav
