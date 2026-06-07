@@ -149,12 +149,10 @@ def generate_action_scene(
                 print(f"Generating first chunk...")
                 video_frames = pipe(
                     prompt=video_prompt,
-                    negative_prompt=video_negative_prompt,
                     height=height,
                     width=width,
                     num_frames=frames_per_chunk,
                     num_inference_steps=video_steps,
-                    guidance_scale=cfg_scale,
                     generator=generator
                 ).frames[0]
 
