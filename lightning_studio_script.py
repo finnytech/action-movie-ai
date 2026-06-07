@@ -77,14 +77,12 @@ def concat_videos(video_paths, output_path):
 
 def generate_action_scene(
     video_prompt,
-    video_negative_prompt,
     audio_prompt,
     model_name,
     resolution,
     target_duration,
     fps,
     video_steps,
-    cfg_scale,
     seed,
     audio_steps,
     enable_cpu_offload
@@ -297,11 +295,6 @@ with gr.Blocks() as demo:
                 value="A cinematic action fight scene of two warriors in a rainy alleyway at night. Slow motion punches, splashing water, photorealistic.",
                 lines=3
             )
-            video_neg_prompt = gr.Textbox(
-                label="Negative Prompt",
-                value="blurry, worst quality, low quality, static, deformed, cartoon, 3d, anime",
-                lines=2
-            )
             audio_prompt = gr.Textbox(
                 label="Audio Design Prompt",
                 value="heavy rain, loud thunder rumbling, physical punches, grunts, cinematic action score",
@@ -341,13 +334,6 @@ with gr.Blocks() as demo:
                     step=1,
                     value=15
                 )
-                cfg_scale = gr.Slider(
-                    label="CFG Scale",
-                    minimum=1.0,
-                    maximum=10.0,
-                    step=0.5,
-                    value=6.0
-                )
                 seed = gr.Number(label="Seed (-1 für Zufall)", value=-1, precision=0)
                 audio_steps = gr.Slider(label="Audio Steps", minimum=20, maximum=100, step=10, value=50)
                 enable_cpu_offload = gr.Checkbox(label="Agressives CPU-Offloading (Gegen VRAM Overflows)", value=False)
@@ -368,8 +354,8 @@ with gr.Blocks() as demo:
     generate_btn.click(
         fn=generate_action_scene,
         inputs=[
-            video_prompt, video_neg_prompt, audio_prompt, model_name, resolution,
-            target_duration, fps, video_steps, cfg_scale, seed, audio_steps, enable_cpu_offload
+            video_prompt, audio_prompt, model_name, resolution,
+            target_duration, fps, video_steps, seed, audio_steps, enable_cpu_offload
         ],
         outputs=[video_output, status_output, download_output]
     )
