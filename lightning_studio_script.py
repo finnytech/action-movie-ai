@@ -26,7 +26,7 @@ print("Libraries check complete!")
 import torch
 import torchvision
 import scipy.io.wavfile as wav
-from diffusers import HunyuanVideoPipeline, HunyuanVideo15ImageToVideoPipeline, AudioLDM2Pipeline
+from diffusers import HunyuanVideo15Pipeline, HunyuanVideo15ImageToVideoPipeline, AudioLDM2Pipeline
 from diffusers.utils import export_to_video
 import gradio as gr
 from huggingface_hub import snapshot_download
@@ -135,7 +135,7 @@ def generate_action_scene(
         try:
             if i == 0:
                 print(f"Loading Text-to-Video Model: {model_name}")
-                pipe = HunyuanVideoPipeline.from_pretrained(model_name, torch_dtype=torch.bfloat16)
+                pipe = HunyuanVideo15Pipeline.from_pretrained(model_name, torch_dtype=torch.bfloat16)
                 pipe.vae.enable_tiling()
                 if enable_cpu_offload:
                     pipe.enable_model_cpu_offload()
