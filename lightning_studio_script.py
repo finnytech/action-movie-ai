@@ -191,7 +191,7 @@ def generate_action_scene(
         except Exception as e:
             err_msg = f"Error during video generation at chunk {i+1}: {e}"
             print(err_msg)
-            yield current_merged_video if os.path.exists(current_merged_video) else None, err_msg
+            yield current_merged_video if os.path.exists(current_merged_video) else None, err_msg, None
             return
         
         finally:
@@ -202,7 +202,7 @@ def generate_action_scene(
         # Merge what we have so far
         concat_videos(generated_chunk_paths, current_merged_video)
         current_len = min(target_duration, round((i+1) * chunk_duration, 1))
-        yield current_merged_video, f"⏳ Generating video... ({current_len}s / {target_duration}s ready)"
+        yield current_merged_video, f"⏳ Generating video... ({current_len}s / {target_duration}s ready)", current_merged_video
 
     # ==========================================
     # PHASE 2: GENERATE AUDIO FOR TOTAL DURATION
@@ -235,7 +235,7 @@ def generate_action_scene(
         
     except Exception as e:
         print(f"Error during audio generation: {e}")
-        yield current_merged_video, f"Warning: Audio failed ({str(e)}). Showing silent video."
+        yield current_merged_video, f"Warning: Audio failed ({str(e)}). Showing silent video.", current_merged_video
         return
         
     finally:
@@ -260,7 +260,7 @@ def generate_action_scene(
         subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
     except Exception as e:
         print(f"FFmpeg final merge failed: {e}")
-        yield current_merged_video, "Warning: Audio merge failed. Showing silent video."
+        yield current_merged_video, "Warning: Audio merge failed. Showing silent video.", current_merged_video
         return
     finally:
         for p in generated_chunk_paths:
@@ -268,7 +268,7 @@ def generate_action_scene(
         if os.path.exists(temp_audio_path): os.remove(temp_audio_path)
         if os.path.exists(current_merged_video): os.remove(current_merged_video)
 
-    yield final_output_filename, f"✅ Success! {total_video_duration:.1f}s cinematic action video is ready."
+    yield final_output_filename, f"✅ Success! {total_video_duration:.1f}s cinematic action video is ready.", final_output_filename
 
 
 # ==========================================
@@ -318,7 +318,7 @@ with gr.Blocks() as demo:
                 )
                 resolution = gr.Dropdown(
                     label="Auflösung",
-                    choices=["720x480", "854x480"],
+                    choices=["720x480", "848x480"],
                     value="720x480"
                 )
                 target_duration = gr.Slider(
@@ -365,6 +365,7 @@ with gr.Blocks() as demo:
                 autoplay=True,
                 loop=True
             )
+            download_output = gr.File(label="📥 Fertiges Video Herunterladen")
             
     generate_btn.click(
         fn=generate_action_scene,
@@ -372,7 +373,7 @@ with gr.Blocks() as demo:
             video_prompt, video_neg_prompt, audio_prompt, model_name, resolution,
             target_duration, fps, video_steps, cfg_scale, seed, audio_steps, enable_cpu_offload
         ],
-        outputs=[video_output, status_output]
+        outputs=[video_output, status_output, download_output]
     )
 
 if __name__ == "__main__":
