@@ -18,7 +18,7 @@ print("Checking and installing required libraries. Please wait...")
 subprocess.run([
     sys.executable, "-m", "pip", "install", "-q",
     "diffusers", "transformers", "accelerate", "scipy", 
-    "gradio", "sentencepiece", "protobuf", "imageio-ffmpeg", "huggingface_hub"
+    "gradio", "sentencepiece", "protobuf", "imageio-ffmpeg", "imageio", "opencv-python", "huggingface_hub"
 ], check=True)
 
 print("Libraries check complete!")
